@@ -477,20 +477,22 @@ td.num, th.num{text-align:right}
   };
 
   window.kmrFirebaseReady = false;
+  window.kmrCloudSyncReady = false;
   window.kmrFirebaseError = null;
   try {
     firebase.initializeApp(firebaseConfig);
     window.kmrCloudRef = firebase.database().ref("koperasiData");
-    window.kmrCloudRef.once("value")
-      .then(snapshot => {
-        window.kmrCloudData = snapshot.exists() ? snapshot.val() : null;
-        window.kmrFirebaseReady = true;
-        if (typeof window.kmrOnCloudReady === "function") window.kmrOnCloudReady();
-      })
-      .catch(error => {
-        window.kmrFirebaseError = error;
-        console.error("Firebase gagal membaca data:", error);
-      });
+    // Listener realtime: perubahan dari perangkat anggota/admin langsung diterima
+    // oleh semua perangkat lain yang sedang membuka aplikasi.
+    window.kmrCloudRef.on("value", snapshot => {
+      window.kmrCloudData = snapshot.exists() ? snapshot.val() : null;
+      window.kmrFirebaseReady = true;
+      if (typeof window.kmrOnCloudReady === "function") window.kmrOnCloudReady();
+    }, error => {
+      window.kmrFirebaseError = error;
+      console.error("Firebase gagal membaca data realtime:", error);
+      if (typeof showToast === "function") showToast("⚠️ Koneksi Firebase bermasalah. Periksa internet.");
+    });
   } catch (error) {
     window.kmrFirebaseError = error;
     console.error("Firebase gagal diinisialisasi:", error);
@@ -1180,6 +1182,10 @@ let loanApplyForm = document.getElementById('loanApplyForm');
 if(loanApplyForm){
   loanApplyForm.onsubmit = e => {
     e.preventDefault();
+    if(!window.kmrCloudSyncReady){
+      alert('Koneksi/sinkronisasi Firebase belum siap. Pastikan internet aktif, tunggu beberapa detik, lalu kirim pengajuan kembali.');
+      return;
+    }
     let f = new FormData(loanApplyForm);
     let myMember = db.members.find(m => m.name.toLowerCase() === current.name.toLowerCase());
     db.loanApplications.push({
@@ -1323,24 +1329,34 @@ if(af)af.onsubmit=e=>{
 }
 save(false);
 
-// Setelah data Firebase selesai dibaca, gunakan data cloud sebagai sumber utama.
+// Data Firebase menjadi sumber utama dan setiap perubahan cloud langsung
+// memperbarui tampilan perangkat yang sedang aktif.
+window.kmrCloudInitialized = false;
 window.kmrOnCloudReady = function(){
   if(window.kmrCloudData && typeof window.kmrCloudData === 'object'){
-    db = window.kmrCloudData;
-    if(!Array.isArray(db.users)) db.users = [];
-    if(!Array.isArray(db.members)) db.members = [];
-    if(!Array.isArray(db.savings)) db.savings = [];
-    if(!Array.isArray(db.loans)) db.loans = [];
-    if(!Array.isArray(db.payments)) db.payments = [];
-    if(!Array.isArray(db.loanApplications)) db.loanApplications = [];
+    const cloud = window.kmrCloudData;
+    db = {
+      ...cloud,
+      users: Array.isArray(cloud.users) ? cloud.users : [],
+      members: Array.isArray(cloud.members) ? cloud.members : [],
+      savings: Array.isArray(cloud.savings) ? cloud.savings : [],
+      loans: Array.isArray(cloud.loans) ? cloud.loans : [],
+      payments: Array.isArray(cloud.payments) ? cloud.payments : [],
+      loanApplications: Array.isArray(cloud.loanApplications) ? cloud.loanApplications : []
+    };
     localStorage.setItem(KEY, JSON.stringify(db));
+    window.kmrCloudInitialized = true;
+    window.kmrCloudSyncReady = true;
     if(typeof render === 'function' && current) render();
-    showToast('☁️ Data koperasi berhasil dimuat dari Firebase.');
-  } else {
-    // Database cloud masih kosong: isi pertama kali dari data perangkat ini.
+  } else if(!window.kmrCloudInitialized) {
+    // Database cloud masih kosong: isi satu kali dengan data awal perangkat ini.
+    window.kmrCloudInitialized = true;
     window.kmrCloudRef.set(db).then(()=>{
+      window.kmrCloudSyncReady = true;
       showToast('☁️ Firebase siap. Data awal berhasil dikirim ke cloud.');
     }).catch(error=>{
+      window.kmrCloudInitialized = false;
+      window.kmrCloudSyncReady = false;
       console.error('Gagal mengirim data awal ke Firebase:', error);
       showToast('⚠️ Firebase terhubung, tetapi data awal gagal dikirim.');
     });
